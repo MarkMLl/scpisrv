@@ -89,6 +89,7 @@ type
   public
     BlankIsHelp: boolean;
     HelpIsHelp: boolean;
+    HelpQIsHelp: boolean;
 
     (* Initially false, this must be set true before OnAvailable is operative and
       is reset false to prevent repeated entry of the handler. OnAvailable will not
@@ -225,6 +226,7 @@ begin
   registeredMixed := TStringList.Create;
   BlankIsHelp := false;
   HelpIsHelp := false;
+  HelpQIsHelp := false;
   clearQueue
 end { TScpiServer.Create } ;
 
@@ -536,6 +538,8 @@ begin
   if BlankIsHelp and (Trim(msg) = '') then
     msg := helpPattern;
   if HelpIsHelp and (Trim(msg) = 'help') then
+    msg := helpPattern;
+  if HelpQIsHelp and (Trim(msg) = 'help?') then
     msg := helpPattern;
   if Trim(msg) = '' then
     exit;

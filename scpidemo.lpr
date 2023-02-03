@@ -120,6 +120,7 @@ begin
   if Assigned(scpi) then begin
     scpi.BlankIsHelp := true;
     scpi.HelpIsHelp := true;
+    scpi.HelpQIsHelp := true;
     scpi.Register('', @scpiDoNothing);  (* Default does nothing                 *)
     scpi.Register('*HALT', @scpiDoHalt);
     scpi.Register('SYSTem:HELP:HEADers?', nil);
