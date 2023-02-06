@@ -70,13 +70,14 @@ type
       short or long symbol list. If it is a short symbol expand it to a long one,
       raise EInvalidSCPI with an appropriate message on error.
     *)
-    function deAbbreviate(programMessageUnit: TStringList): TStringList;
+    function deAbbreviate(programMessageUnit: TStringList;
+                                        exceptionOnError: boolean= false): TStringList;
 
     (* Make sure that every node in the <Program Message> appears in either the
       short or long symbol list. If it is a short symbol expand it to a long one,
       raise EInvalidSCPI with an appropriate message on error.
     *)
-    function deAbbreviate(programMessage: TList): TList;
+    function deAbbreviate(programMessage: TList; exceptionOnError: boolean= false): TList;
 
     procedure onAvailableShim;
   protected
@@ -106,7 +107,8 @@ type
 
       On error raise an EInvalidAbbreviation.
     *)
-    function DeAbbreviate(const programMessage: AnsiString): AnsiString;
+    function DeAbbreviate(const programMessage: AnsiString;
+                                        exceptionOnError: boolean= false): AnsiString;
 
     (* The pattern is a conventional combination of short- and long-format names.
       There are two special cases here: a blank pattern with a non-nil proc is
@@ -289,7 +291,8 @@ end { TScpiServer.Destroy } ;
 short or long symbol list. If it is a short symbol expand it to a long one,
 raise EInvalidSCPI with an appropriate message on error.
 *)
-function TScpiServer.deAbbreviate(programMessageUnit: TStringList): TStringList;
+function TScpiServer.deAbbreviate(programMessageUnit: TStringList;
+                                        exceptionOnError: boolean= false): TStringList;
 
 var
   i, j: integer;
@@ -297,8 +300,9 @@ var
 
 begin
 
-(* Assume that the final node will either be a value (including ? as a special  *)
-(* case) or * as a wildcard. In both cases leave it untouched.                  *)
+(* Assume that the final node will either be a value (without leading space),   *)
+(* ?MAX etc. (with no embedded space), ? by itself, or * as a wildcard. In all  *)
+(* cases leave it untouched.                                                    *)
 
   for i := 0 to programMessageUnit.Count - 2 do begin
 
@@ -333,7 +337,7 @@ begin
         shortName := node;
         while (shortName <> '') and not (shortName[Length(shortName)] in ['A'..'Z']) do
           SetLength(shortName, Length(shortName) - 1);
-        if shortName = '' then
+        if (shortName = '') and exceptionOnError then
           raise EInvalidSCPI.Create('Malformed short name "' + node + '"');
         if suffix = '' then
           hash := ''
@@ -368,7 +372,7 @@ end { TScpiServer.deAbbreviate } ;
 short or long symbol list. If it is a short symbol expand it to a long one,
 raise EInvalidSCPI with an appropriate message on error.
 *)
-function TScpiServer.deAbbreviate(programMessage: TList): TList;
+function TScpiServer.deAbbreviate(programMessage: TList; exceptionOnError: boolean= false): TList;
 
 var
   i: integer;
@@ -376,7 +380,7 @@ var
 begin
   result := programMessage;
   for i := 0 to programMessage.Count - 1 do
-    deAbbreviate(TStringList(programMessage[i]))
+    deAbbreviate(TStringList(programMessage[i]), exceptionOnError)
 end { TScpiServer.deAbbreviate } ;
 
 
@@ -386,7 +390,8 @@ then change it from the abbreviated (short) to the long form.
 
 On error raise an EInvalidAbbreviation.
 *)
-function TScpiServer.DeAbbreviate(const programMessage: AnsiString): AnsiString;
+function TScpiServer.DeAbbreviate(const programMessage: AnsiString;
+                                        exceptionOnError: boolean= false): AnsiString;
 
 var
   pm: TList;
@@ -398,7 +403,7 @@ begin
 
   pm := ReRoot(DeTail(DeConstruct(programMessage)));
   try
-    deAbbreviate(pm);
+    deAbbreviate(pm, exceptionOnError);
     ReTail(pm)
   finally
 
@@ -736,14 +741,14 @@ begin
 (* are handled specially.                                                       *)
 
       syntaxPatternMixed := StringReplace(pattern, ':HEADers?', ':SYNTax?', [rfReplaceAll]);
-      syntaxPattern := deAbbreviate(syntaxPatternMixed);
+      syntaxPattern := deAbbreviate(syntaxPatternMixed, true);
       helpPatternMixed := pattern;
-      helpPattern := deAbbreviate(helpPatternMixed)
+      helpPattern := deAbbreviate(helpPatternMixed, true)
     end else begin
 
 (* Everything else is added to a list, the order being significant.             *)
 
-      actual := deAbbreviate(pattern);  (* Visible for debugging                *)
+      actual := deAbbreviate(pattern, true); (* Visible for debugging           *)
       a := registered.AddObject(actual, TObject(proc));
       p := registeredMixed.Add(pattern);
       Assert(p = a, 'Inconsistent registered list entries')
@@ -880,6 +885,7 @@ function TScpiServer.Dispatch(): boolean;
 var
   msg: AnsiString= '';
   i: integer;
+  pm: TList;
 
 
   (* The message, unless unusually short, will have an appended value (possibly ?
@@ -1017,6 +1023,18 @@ begin
       exit(true)
     end;
 
+(* If the message starts off with the syntax pattern (typically something like  *)
+(* SYSTEM:HELP:SYNTAX? ) then treat the value as a command which needs to be    *)
+(* expanded to its full form. This is the only case where the value is changed  *)
+(* before being passed to a registered handler.                                 *)
+
+    if Pos(syntaxPattern + ' ', msg) = 1 then begin
+      Delete(msg, 1, Length(syntaxPattern) + 1);
+      pm := ReTail(deAbbreviate(ReRoot(DeTail(DeConstruct(msg)))));
+      msg := ReConstruct(pm);           (* Borrowed from Enqueue() above        *)
+      msg := syntaxPattern + ' ' + msg
+    end;
+
 (* SYSTem:HELP:SYNTAX? results in each of the registered commands being passed  *)
 (* ' SYNTAX' (note leading space) as its parameter. Hence                       *)
 (*                                                                              *)
@@ -1053,9 +1071,14 @@ begin
       exit(true)
     end;
     if Pos(syntaxPattern, msg) = 1 then begin
-      for i := 0 to Registered.Count - 1 do
+      for i := 0 to Registered.Count - 1 do begin
         if Pos(' ' + registered[i], msg) > 0 then
-          ScpiProc(registered.Objects[i])(self, registered[i] + ' SYNTAX');
+          result := ScpiProc(registered.Objects[i])(self, registeredMixed[i] + ' SYNTAX');
+        if result then
+          break
+      end;
+      if Assigned(defaultProc) and not result then
+        result := defaultProc(self, msg + ' SYNTAX');
 
 (* The handler invoked above might output multiple lines of text, so allowance  *)
 (* is made for leading spaces in case a prompt is being issued. However since   *)

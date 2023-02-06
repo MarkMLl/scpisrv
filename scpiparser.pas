@@ -25,8 +25,8 @@ type
 function DeConstruct(const programMessage: AnsiString): TList;
 
 (* Take a <Program Message Unit> comprising multiple nodes separated by : with
-  :* as a special case, plus an optional final value separated by a space or
-  with ? as a special case. Separate the value or ? into a distinct node.
+  :* as a special case, plus an optional final value separated by '? ' or ' '
+  with '?' as a special case. Separate the value or ? into a distinct node.
   Raise EInvalidSCPI with an appropriate message on error.
 *)
 function DeTail(programMessageUnit: TStringList): TStringList;
@@ -73,10 +73,19 @@ function ReTail(programMessage: TList): TList;
 *)
 function ReConstruct(var programMessage: TList; freeList: boolean= true): AnsiString;
 
+procedure ScpiDump(programMessageUnit: TStringList; indent: integer= 0; const header: AnsiString= '');
+procedure ScpiDump(programMessage: TList; indent: integer= 0; const header: AnsiString= '');
+
 
 implementation
 
-{ define DEBUG }
+{$define DEBUG }
+{ define DEBUGONLY }
+
+{$ifdef DEBUGONLY }
+{$define DEBUG    }
+{$endif DEBUGONLY }
+
 
 uses
   StrUtils;
@@ -88,6 +97,9 @@ const
 *)
   valueWildcard= #$1f;
 
+type
+  abortSet= set of AnsiChar;
+
 
 (* Break a string on the indicated delimiter, returning a TStringList (to be
   freed by the caller) containing zero or more substrings. On error, raise
@@ -97,9 +109,11 @@ const
   or escaped using \, it is treated as part of the current substring. Quotes
   may themselves be embedded in strings either by being repeated (Pascal-style),
   or by being of the opposite type of quote (Modula-2 style), or using a \
-  escape (C-style).
+  escape (C-style). Everything at or beyond the abort, if defined, is appended
+  to the final substring.
 *)
-function scpiSplit(const command: AnsiString; delimiter: AnsiChar= ':'): TStringList;
+function scpiSplit(const command: AnsiString; delimiter: AnsiChar= ';';
+                                                abort: AbortSet= []): TStringList;
 
 var
   sq: boolean= false;
@@ -132,7 +146,8 @@ begin
         continue
       end;
 
-(* Handle two-character sequences which are invariably passed verbatim.         *)
+(* Special case: handle two-character sequences which are invariably passed     *)
+(* verbatim.                                                                    *)
 
       token := Copy(command, i, 2);
       case token of
@@ -147,10 +162,16 @@ begin
       otherwise
       end;
 
-(* When considering single characters, quotes toggle unless nested and if       *)
-(* either type of quote is active a delimiter is not treated as significant.    *)
+(* When considering single characters, treat everything at or after an abort    *)
+(* character as indivisible (typically a value); quotes toggle unless nested    *)
+(* and if either type of quote is active a delimiter is not treated as          *)
+(* significant.                                                                 *)
 
       token := command[i];
+      if (abort <> []) and (token[1] in abort) and not (sq or dq) then begin
+        result[result.Count - 1] := result[result.Count - 1] + Copy(command, i, MaxInt);
+        break
+      end;
       case token of
         '''': begin
                 result[result.Count - 1] := result[result.Count - 1] + token;
@@ -177,7 +198,7 @@ begin
 end { scpiSplit } ;
 
 
-procedure dump(programMessageUnit: TStringList; indent: integer= 0; const header: AnsiString= '');
+procedure ScpiDump(programMessageUnit: TStringList; indent: integer= 0; const header: AnsiString= '');
 
 {$ifdef DEBUG }
 var
@@ -194,19 +215,23 @@ begin
 {$else        }
 begin
 {$endif DEBUG }
-end { dump } ;
+end { ScpiDump } ;
 
 
-procedure dump(programMessage: TList; indent: integer= 0; const header: AnsiString= '');
+procedure ScpiDump(programMessage: TList; indent: integer= 0; const header: AnsiString= '');
 
+{$ifdef DEBUG }
 var
   i: integer;
 
 begin
   WriteLn(StdErr, ';;; ' + header);
   for i := 0 to programMessage.Count - 1 do
-    dump(TStringList(programMessage[i]), indent + 2)
-end { dump } ;
+    ScpiDump(TStringList(programMessage[i]), indent + 2)
+{$else        }
+begin
+{$endif DEBUG }
+end { ScpiDump } ;
 
 
 (* Take a <Program Message> which comprises one or more <Program Message Units>
@@ -230,7 +255,7 @@ begin
     pmuList := scpiSplit(programMessage, ';');
     try
       for i := 0 to pmuList.Count - 1 do
-        result.Add(scpiSplit(pmuList[i], ':'))
+        result.Add(scpiSplit(pmuList[i], ':', [' ', '?']))
     finally
       FreeAndNil(pmuList)
     end;
@@ -244,14 +269,14 @@ end { DeConstruct };
 
 
 (* Take a <Program Message Unit> comprising multiple nodes separated by : with
-  :* as a special case, plus an optional final value separated by a space or
-  with ? as a special case. Separate the value or ? into a distinct node.
+  :* as a special case, plus an optional final value separated by '? ' or ' '
+  with '?' as a special case. Separate the value or ? into a distinct node.
   Raise EInvalidSCPI with an appropriate message on error.
 *)
 function DeTail(programMessageUnit: TStringList): TStringList;
 
 var
-  final, space: integer;
+  final, operation: integer;
   finalNode: string;
   value: string= '';
 
@@ -259,7 +284,11 @@ begin
   result := programMessageUnit;
   final := programMessageUnit.Count - 1;
   finalNode := programMessageUnit[final];
-  space := Pos(' ', finalNode);
+  operation := Pos('? ', finalNode);
+  if operation < 1 then
+    operation := Pos('?', finalNode);
+  if operation < 1 then
+    operation := Pos(' ', finalNode);
 
 (* The value is separated by a space. However I'm also trying to handle syntax  *)
 (* that is strictly invalid where a value appears without a node indicating     *)
@@ -270,11 +299,11 @@ begin
 (* At the very least, it is desirable to keep the numeric value and the unit    *)
 (* together, even if it is later rejected as an error.                          *)
 
-  if (space > 0) and not (finalNode[1] in ['.', '0'..'9']) then begin
-    value := Copy(finalNode, space + 1, MaxInt);
+  if (operation > 0) and not (finalNode[1] in ['.', '0'..'9']) then begin
+    value := Copy(finalNode, operation, MaxInt);
     if value = '*' then
       value := valueWildcard;
-    SetLength(finalNode, space - 1)
+    SetLength(finalNode, operation - 1)
   end else
     if finalNode[Length(finalNode)] = '?' then begin
       value := '?';
@@ -402,12 +431,15 @@ begin
     case programMessageUnit[i] of
       '?':           programMessageUnit[0] := programMessageUnit[0] + programMessageUnit[i];
       '*':           programMessageUnit[0] := programMessageUnit[0] + ':' + programMessageUnit[i];
-      valueWildcard: programMessageUnit[0] := programMessageUnit[0] + ' *'
+      valueWildcard: programMessageUnit[0] := programMessageUnit[0] + '*'
     otherwise
       if i <> programMessageUnit.Count - 1 then
         programMessageUnit[0] := programMessageUnit[0] + ':' + programMessageUnit[i]
       else
-        programMessageUnit[0] := programMessageUnit[0] + ' ' + programMessageUnit[i]
+        if (programMessageUnit[i] <> '') and (programMessageUnit[i][1] in ['.', '0'..'9', '*']) then
+          programMessageUnit[0] := programMessageUnit[0] + ' ' + programMessageUnit[i]
+        else
+          programMessageUnit[0] := programMessageUnit[0] + programMessageUnit[i]
     end;
   for i := programMessageUnit.Count - 1 downto 1 do
     programMessageUnit.Delete(i)
@@ -502,14 +534,14 @@ begin
 (* and expanding the nodes typically during the handling of a message.          *)
 
   ReRoot(pm);
-  dump(pm, 0, command);
+  ScpiDump(pm, 0, command);
 
 (* At this point each Program Message Unit is identified unambiguously relative *)
 (* to the root. This is typically where callbacks would be triggered.           *)
 
   ReTail(pm);
-//  dump(pm, 0, command);
-//  WriteLn(StdErr, '=== ', ReConstruct(pm));
+//  ScpiDump(pm, 0, command);
+  WriteLn(StdErr, '=== ', ReConstruct(pm));
 
 (* The reconstructed Program Message should be very similar to the original,    *)
 (* except that every Program Message Unit is explicitly root-relative. As a     *)
@@ -523,7 +555,7 @@ end { testSplit } ;
 procedure testSplitting;
 
 begin
-{$ifdef DEBUG }
+{$ifdef DEBUGONLY }
 
 (* Test cases from https://www.ivifoundation.org/docs/scpi-99.pdf               *)
 
@@ -544,19 +576,19 @@ begin
   testSplit('FREQ:START 3 MHz;:BAND A', ';');
   testSplit('DISP:STAT ON;DATA "Hello, world!"', ';');
 
-(* This is strictly invalid, since there is no header (node etc.) preceding the *)
-(* value. It might be possible to bodge it by assuming that a leading digit     *)
-(* indicates the start of a value (i.e. as an alternative to a space, but it    *)
-(* will remain problematic.                                                     *)
-
-  testSplit('FREQ:SLEW:AUTO ON;3 MHZ/S', ';');
-
 (* Test a couple of queries derived from the above.                             *)
 
   testSplit('FREQ:START 3 MHZ;BAND 1 MHZ', ';');
   testSplit('FREQ:START 3 MHZ;BAND?', ';');
   testSplit('FREQ:START 3 MHz;:BAND A', ';');
   testSplit('FREQ:START 3 MHz;:BAND?', ';');
+
+(* This is strictly invalid, since there is no header (node etc.) preceding the *)
+(* value. It might be possible to bodge it by assuming that a leading digit     *)
+(* indicates the start of a value (i.e. as an alternative to a space, but it    *)
+(* will remain problematic.                                                     *)
+
+  testSplit('FREQ:SLEW:AUTO ON;3 MHZ/S', ';');
 
 (* Test that the saved root is updated as needed.                               *)
 
@@ -567,14 +599,25 @@ begin
   testSplit('FREQuency:STARt *', ';');
   testSplit('FREQuency:STARt?', ';');
   testSplit('DISPlay:*', ';');
+
+(* There are a number of cases where there may be something "value-like" after  *)
+(* the question mark which indicates a query. The first example here is from    *)
+(* Volume 1 of the specification, the others my extension to return the syntax  *)
+(* of a command.                                                                *)
+
+  testSplit('SYSTem:TIME? MAX,MAX,MAX');
+  testSplit('SYSTem:HELP:SYNTax? SYSTem');
+  testSplit('SYSTem:HELP:SYNTax? SYSTem:HELP');
+  testSplit('SYSTem:HELP:SYNTax? SYSTem:HELP:SYNTax?');
+
   halt
-{$endif DEBUG }
+{$endif DEBUGONLY }
 end { testSplitting } ;
 
 
-{$ifdef DEBUG }
+{$ifdef DEBUGONLY }
 begin
   testSplitting
-{$endif DEBUG }
+{$endif DEBUGONLY }
 end.
 

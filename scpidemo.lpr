@@ -37,6 +37,7 @@ var
 {$macro on  }
 {$define IS_SCPI_SYNTAX__:= Pos(' SYNTAX', command) = Length(command) - Length(' SYNTAX') + 1 }
 {$define SCPI_COMMAND_NO_SYNTAX__:= Copy(command, 1, Length(command) - Length(' SYNTAX')) }
+{$define SYNTAX_REQUESTED_FOR__:= Copy(SCPI_COMMAND_NO_SYNTAX__, Pos(' ', SCPI_COMMAND_NO_SYNTAX__) + 1, MaxInt) }
 
 function scpiDoNothing(scpi: TScpiServer; const {%H-}command: AnsiString): boolean;
 
@@ -45,9 +46,12 @@ begin
   if IS_SCPI_SYNTAX__ then begin
     if scpi.Prompt then
       scpi.Respond('  ', false);
-    scpi.Respond(SCPI_COMMAND_NO_SYNTAX__ + ' (Do not understand.)', true)
-  end else begin
-  end;
+    if Pos(' ', SCPI_COMMAND_NO_SYNTAX__) > 0 then
+      scpi.Respond('No syntax for "' + SYNTAX_REQUESTED_FOR__ + '"', true)
+    else
+      scpi.Respond('No syntax for "' + SCPI_COMMAND_NO_SYNTAX__ + '"', true)
+  end else
+    scpi.Respond('Do not understand "' + command + '"', true)
 end { scpiDoNothing } ;
 
 
