@@ -22,7 +22,7 @@ uses
 
 type
   TScpiServer= class;
-  TBlocking= (Blocking, NonBlocking);
+  TBlocking= (IsBlocking, NonBlocking);
   ScpiProc= function(scpi: TScpiServer; const command: AnsiString): boolean;
   AvailableProc= procedure(scpi: TScpiServer; available: integer);
   LineStates= (LeftMargin, Reading, SeenIac, SeenIacReq);
@@ -56,12 +56,12 @@ type
 
       If non-blocking, this will return zero if no character is available.
     *)
-    function getNextChar(block: TBlocking= Blocking): AnsiChar;
+    function getNextChar(blocking: TBlocking= IsBlocking): AnsiChar;
 
     (* This is a blocking call to read and process a single character. Return true
       when a complete line is enqueued.
     *)
-    function readAndEnqueue(block: TBlocking= Blocking): boolean;
+    function readAndEnqueue(blocking: TBlocking= IsBlocking): boolean;
 
     procedure enqueue(msg: AnsiString);
     procedure clearQueue;
@@ -137,7 +137,7 @@ type
       alternative to running a background thread, and must be used if a prompt is
       required when reading stdin.
     *)
-    function Poll(prompt: boolean= false; block: TBlocking= Blocking): boolean;
+    function Poll(prompt: boolean= false; blocking: TBlocking= IsBlocking): boolean;
 
     (* Using the main thread, read input and enqueue a non-blank message returning
       true. This is a blocking call and returns true when a line is enqueued and
@@ -145,7 +145,7 @@ type
       alternative to running a background thread, and must be used if a prompt is
       required when reading stdin.
     *)
-    function Poll(block: TBlocking= Blocking): boolean;
+    function Poll(blocking: TBlocking= IsBlocking): boolean;
 
     (* Return true if a message has been dequeued and dispatched to a registered
       handler.
@@ -168,7 +168,7 @@ type
 implementation
 
 uses
-  StrUtils, UnixType, BaseUnix {} , Errors {} , ScpiParser ;
+  StrUtils, UnixType, BaseUnix { , Errors } , ScpiParser ;
 
 type
   EScpiForcedTermination= CLASS(Exception);
@@ -299,6 +299,7 @@ var
   node, suffix, hash, longName, shortName: AnsiString;
 
 begin
+  result := programMessageUnit;
 
 (* Assume that the final node will either be a value (without leading space),   *)
 (* ?MAX etc. (with no embedded space), ? by itself, or * as a wildcard. In all  *)
@@ -425,7 +426,7 @@ end { TScpiServer.DeAbbreviate } ;
 
   If non-blocking, this will return zero if no character is available.
 *)
-function TScpiServer.getNextChar(block: TBlocking= Blocking): AnsiChar;
+function TScpiServer.getNextChar(blocking: TBlocking= IsBlocking): AnsiChar;
 
 label
   listenAgain;
@@ -454,7 +455,7 @@ begin
     repeat
       if Terminated then
         Raise EScpiForcedTermination.Create('Forced thread termination while receiving');
-      if block = NonBlocking then begin
+      if blocking = NonBlocking then begin
         fpFD_ZERO(readSet);
         fpFD_SET(0, readSet);
         timeout.tv_sec := 0;
@@ -475,7 +476,7 @@ listenAgain:
       while fpListen(fSocket, 1) <> 0 do
         if Terminated then
           Raise EScpiForcedTermination.Create('Forced thread termination while listening');
-      if block = Blocking then begin
+      if blocking = IsBlocking then begin
         timeout.tv_sec := 0;
         timeout.tv_usec := 0
       end else begin
@@ -489,14 +490,14 @@ listenAgain:
       end;
       sockLen := SizeOf(sockAddr);      (* Note: might or might not block       *)
       fClient := fpAccept(fSocket, @sockAddr, @sockLen);
-      if (block = NonBlocking) and (fClient < 0) then
+      if (blocking = NonBlocking) and (fClient < 0) then
         exit;                           (* No incoming connection, return zero  *)
       if Terminated then
         Raise EScpiForcedTermination.Create('Forced thread termination while accepting');
       if fClient >= 0 then
         fListening := false
     end;
-    if block = Blocking then begin
+    if blocking = IsBlocking then begin
       flags := 0;
       sockLen := 1                      (* Terminate if < 1 character received  *)
     end else begin
@@ -505,7 +506,7 @@ listenAgain:
     end;
     flags := fpRecv(fClient, @result, 1, flags); (* Note: might or might not block *)
     if flags < sockLen then begin       (* Result visible for debugging         *)
-      if (block = NonBlocking) and (SocketError = ESysEAGAIN) then
+      if (blocking = NonBlocking) and (SocketError = ESysEAGAIN) then
         exit(#$00);
       if Terminated then
         Raise EScpiForcedTermination.Create('Forced thread termination while receiving');
@@ -593,7 +594,7 @@ end { TScpiServer.clearQueue } ;
 (* This is a blocking call to read and process a single character. Return true
   when a complete line is enqueued.
 *)
-function TScpiServer.readAndEnqueue(block: TBlocking= Blocking): boolean;
+function TScpiServer.readAndEnqueue(blocking: TBlocking= IsBlocking): boolean;
 
 var
   c: AnsiChar;
@@ -646,7 +647,7 @@ var
 
 begin
   result := false;
-  c := getNextChar(block);             (* Blocking, might LeftMargin -> Reading *)
+  c := getNextChar(blocking);          (* Blocking, might LeftMargin -> Reading *)
   case lineState of
     LeftMargin,
     Reading:     begin
@@ -837,31 +838,14 @@ end { TScpiServer.CommandsAvailable } ;
   alternative to running a background thread, and must be used if a prompt is
   required when reading stdin.
 *)
-function TScpiServer.Poll(prompt: boolean= false; block: TBlocking= Blocking): boolean;
-
-// TODO : Explore the feasibility of non-blocking Poll() behaviour and/or a timeout.
-// The issue here is that in (a program supporting) an instrument that is e.g.
-// constantly pushing data over a serial interface, since Poll() is blocking
-// nothing else will happen if there is no SCPI activity. This is compounded
-// by the fact that getNextByte() is handling transitions to and from the
-// listening state, so not using a thread in this case is- quite literally- a
-// non-starter.
-//
-// In more detail, and loosely: listen() defines a queue length, accept() reads
-// a connection from that queue. It should apparently be possible to set fSocket
-// non-blocking which affects accept(), after which the newly-returned fClient
-// might or might not be blocking (we probably want it non-blocking for
-// compatibility with the PIN reader in the Telnet server).
-//
-// https://www.scottklement.com/rpg/socktimeout/timingOut.html claims that
-// select() works with accept(): presumably this is in effect a read operation.
+function TScpiServer.Poll(prompt: boolean= false; blocking: TBlocking= IsBlocking): boolean;
 
 begin
   fPrompt := prompt;
   if fSocket = INVALID_SOCKET then
     if not prepareSocket() then
       exit(false);
-  result := readAndEnqueue(block)
+  result := readAndEnqueue(blocking)
 end { TScpiServer.Poll } ;
 
 
@@ -871,10 +855,10 @@ end { TScpiServer.Poll } ;
   alternative to running a background thread, and must be used if a prompt is
   required when reading stdin.
 *)
-function TScpiServer.Poll(block: TBlocking= Blocking): boolean;
+function TScpiServer.Poll(blocking: TBlocking= IsBlocking): boolean;
 
 begin
-  result := Poll(false, block)
+  result := Poll(false, blocking)
 end { TScpiServer.Poll } ;
 
 

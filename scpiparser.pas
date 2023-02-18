@@ -13,7 +13,7 @@ uses
   Classes, SysUtils;
 
 type
-    EInvalidSCPI= class(Exception);
+  EInvalidSCPI= class(Exception);
 
 (* Take a <Program Message> which comprises one or more <Program Message Units>
   with ; as a separator. Expect that the first PMU is rooted even if it is not
