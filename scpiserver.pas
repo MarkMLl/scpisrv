@@ -32,6 +32,7 @@ type
     portNumber: integer;
     lineState: LineStates;
     fPrompt: boolean;
+    fOwnAddr: AnsiString;
     fSocket: TSocket;
     fListening: boolean;
     fClient: TSocket;
@@ -152,6 +153,10 @@ type
     *)
     function Dispatch(): boolean;
 
+    (* This identifies the server's IP addresses as a comma/space-separated string.
+    *)
+    property OwnAddr: AnsiString read fOwnAddr;
+
     (* Return a response to a client, with optional CRLF termination.
     *)
     procedure Respond(const msg: ansistring; eol: boolean= false);
@@ -168,7 +173,7 @@ type
 implementation
 
 uses
-  StrUtils, UnixType, BaseUnix { , Errors } , ScpiParser ;
+  StrUtils, UnixType, BaseUnix { , Errors } , ScpiParser, IpAddressUtils;
 
 type
   EScpiForcedTermination= CLASS(Exception);
@@ -202,6 +207,7 @@ begin
   if threadManagerInstalled() then
     inherited Create(CreateSuspended);
   portNumber := port;
+  fOwnAddr := GetOwnIpAddresses(true);
   fSocket := INVALID_SOCKET;
   fClient := INVALID_SOCKET;
   fListening := true;

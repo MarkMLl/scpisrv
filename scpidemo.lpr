@@ -120,8 +120,18 @@ begin
     WriteLn(stderr, '# Starting SCPI daemon on standard I/O')
   else
     WriteLn(stderr, '# Starting SCPI daemon on port ', scpiPort);
+
+(* Even though we're not showing this host's IP addresses yet, we can usefully  *)
+(* display the port number early so that if the daemon can't be started we know *)
+(* the potential clash.                                                         *)
+
   scpi := TScpiServer.Create(scpiPort);
   if Assigned(scpi) then begin
+    if (scpiPort > -1) and (scpi.OwnAddr <> '') then
+      if Pos(' ', scpi.OwnAddr) > 0 then
+        WriteLn(StdErr, '# Listening on IP addresses ', scpi.OwnAddr)
+      else
+        WriteLn(StdErr, '# Listening on IP address ', scpi.OwnAddr);
     scpi.BlankIsHelp := true;
     scpi.HelpIsHelp := true;
     scpi.HelpQIsHelp := true;
