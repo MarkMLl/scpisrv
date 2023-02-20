@@ -29,7 +29,7 @@ any: Makefile
 
 # NOTE THAT THIS MIGHT ONLY BE A PARTIAL DEPENDENCY LIST.
 
-$(TARGET):any scpiserver.pas scpiparser.pas scpidemo.lpr 
+$(TARGET):any scpiserver.pas scpiparser.pas ipaddressutils.pas scpidemo.lpr 
 	$(FPC) $(FPCFLAGS) -o$(TARGET) $_.lpr 
 
 test: $(TARGET)
@@ -38,7 +38,7 @@ test: $(TARGET)
 ############
 
 clean:
-	rm -f scpidemo.o scpiserver.ppu scpiserver.o scpiparser.ppu scpiparser.o
+	rm -f scpidemo.o scpiserver.ppu scpiserver.o scpiparser.ppu scpiparser.o ipaddressutils.o ipaddressutils.ppu
                 
 distclean: clean
 	rm -f $(TARGET)* *lps $_.tar $_.tar.gz $_.tgz $_.zip
