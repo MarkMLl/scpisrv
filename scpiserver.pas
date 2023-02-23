@@ -632,9 +632,9 @@ var
     otherwise
       case iacReq of
         iacDo,
-        iacDont: response += iacDont;
+        iacDont: response += iacWont;
         iacWill,
-        iacWont: response += iacWont
+        iacWont: response += iacDont
       otherwise
 // TODO : Consider response to erroneously-sent iacSb etc.
         exit
