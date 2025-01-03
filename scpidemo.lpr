@@ -35,7 +35,7 @@ var
 
 
 {$macro on  }
-{$define IS_SCPI_SYNTAX__:= Pos(' SYNTAX', command) = Length(command) - Length(' SYNTAX') + 1 }
+{$define IS_SCPI_SYNTAX__:= (Pos(' SYNTAX', command) > 0) and (Pos(' SYNTAX', command) = Length(command) - Length(' SYNTAX') + 1) }
 {$define SCPI_COMMAND_NO_SYNTAX__:= Copy(command, 1, Length(command) - Length(' SYNTAX')) }
 {$define SYNTAX_REQUESTED_FOR__:= Copy(SCPI_COMMAND_NO_SYNTAX__, Pos(' ', SCPI_COMMAND_NO_SYNTAX__) + 1, MaxInt) }
 
@@ -68,6 +68,25 @@ begin
     Halt
   end
 end { scpiDoHalt } ;
+
+
+(* Response should be four fields with manufacturer, model (without "Model "
+  text etc.), serial number, and firmware/revision info of all subsystems.
+
+  Assume that response fields may be empty but must remain comma-delimited, and
+  that trailing (but not embedded) spurious commas may be suppressed.
+*)
+function scpiDoIdentify(scpi: TScpiServer; const {%H-}command: AnsiString): boolean;
+
+begin
+  result := true;
+  if IS_SCPI_SYNTAX__ then begin
+    if scpi.Prompt then
+      scpi.Respond('  ', false);
+    scpi.Respond(SCPI_COMMAND_NO_SYNTAX__, true)
+  end else
+    scpi.Respond('Demo program', true)
+end { scpiDoIdentify } ;
 
 
 function scpiReportFunction(scpi: TScpiServer; const {%H-}command: AnsiString): boolean;
@@ -113,13 +132,13 @@ begin
       else
         if (not TryStrToInt(ParamStr(1), scpiPort)) or
                     (scpiPort < 0) or (scpiPort > 65535) then begin
-          WriteLn(stderr, 'Bad SCPI port number');
+          WriteLn(erroutput, 'Bad SCPI port number');
           Halt(1)                       (* Bad SCPI port                        *)
         end;
   if scpiPort = -1 then
-    WriteLn(stderr, '# Starting SCPI daemon on standard I/O')
+    WriteLn(erroutput, '# Starting SCPI daemon on standard I/O')
   else
-    WriteLn(stderr, '# Starting SCPI daemon on port ', scpiPort);
+    WriteLn(erroutput, '# Starting SCPI daemon on port ', scpiPort);
 
 (* Even though we're not showing this host's IP addresses yet, we can usefully  *)
 (* display the port number early so that if the daemon can't be started we know *)
@@ -136,8 +155,24 @@ begin
     scpi.HelpIsHelp := true;
     scpi.HelpQIsHelp := true;
     scpi.Register('', @scpiDoNothing);  (* Default does nothing                 *)
+    scpi.Register('SYSTem:HELP:HEADers?', nil); (* Help and syntax handler      *)
+    scpi.Register('*IDN', @scpiDoIdentify); (* This is mandatory                *)
     scpi.Register('*HALT', @scpiDoHalt);
-    scpi.Register('SYSTem:HELP:HEADers?', nil);
+
+(* There are more * commands which are mandatory for any SCPI implementation,   *)
+(* plus some that are optional. I don't know which of those absolutely /have/   *)
+(* to be implemented for minimum functionality, there's a list on the Wp page   *)
+(* and the three links                                                          *)
+(*
+http://www.av.it.pt/medidas/data/Manuais%20&%20Tutoriais/40b%20-%20VNA%20-%20ZVB20/CD/documents/Help_Files/WebHelp_ZVB/Remote_Control/Status_Reporting_System/status_registers.htm
+http://www.av.it.pt/medidas/data/Manuais%20&%20Tutoriais/40b%20-%20VNA%20-%20ZVB20/CD/documents/Help_Files/WebHelp_ZVB/Remote_Control/Status_Reporting_System/Status_Reporting_System.htm#Structure *)
+https://www.icselect.com/pdfs/ab48_11%20GPIB-101.pdf
+(*                                                                              *)
+(* look useful.                                                                 *)
+(*                                                                              *)
+(* I also don't know what the correct response for an unimplemented command is, *)
+(* at present I'm ignoring it but at the very least I'd expect it to set a      *)
+(* status register bit.                                                         *)
 
 (* Placeholders for reporting the current function to which a hypothetical      *)
 (* multimeter is set, and for responding to all measurement requests.           *)
@@ -166,9 +201,9 @@ begin
         until scpi.Finished
       end else
         if scpiPort < 0 then
-          WriteLn(stderr, '# Unable to run SCPI server on stdin')
+          WriteLn(erroutput, '# Unable to run SCPI server on stdin')
         else
-          WriteLn(stderr, '# Unable to run SCPI server on port ', scpiPort)
+          WriteLn(erroutput, '# Unable to run SCPI server on port ', scpiPort)
     else
 {$endif USETHREAD }
       {%H-}repeat
@@ -180,6 +215,6 @@ begin
       until scpi.Finished;
     FreeAndNil(scpi)
   end else
-    WriteLn(stderr, '# Unable to create SCPI server')
+    WriteLn(erroutput, '# Unable to create SCPI server')
 end.
 

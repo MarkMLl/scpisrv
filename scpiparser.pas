@@ -4,7 +4,6 @@ unit ScpiParser;
 
 (* SCPI support functions.                                      MarkMLl.        *)
 
-
 {$mode ObjFPC}{$H+}
 
 interface
@@ -99,6 +98,41 @@ const
 
 type
   abortSet= set of AnsiChar;
+
+
+(* This is for internal debugging.
+*)
+function asString(pmu: TStringList): string;
+
+var
+  i: integer;
+
+begin
+  result := '';                         (* We very much do not want any odd     *)
+  for i := 0 to pmu.Count - 1 do begin  (* quotes etc. introduced by CommaText. *)
+    if i > 0 then
+      result += ',';
+    result += pmu[i]
+  end
+end { asString } ;
+
+
+(* This is for internal debugging.
+*)
+function asString(pm: TList): string;
+
+var
+  i: integer;
+
+begin
+  result := '';
+  for i := 0 to pm.Count - 1 do begin
+    if i > 0 then
+      result += '.';
+    Assert(TObject(pm[i]) is TStringList, 'Internal error: bad list item.');
+    result += asString(TObject(pm[i]) as TStringList)
+  end
+end { asString } ;
 
 
 (* Break a string on the indicated delimiter, returning a TStringList (to be
@@ -205,13 +239,13 @@ var
   i: integer;
 
 begin
-  WriteLn(StdErr, '::: ' + header);
+  WriteLn(ErrOutput, '::: ' + header);
   for i := 0 to programMessageUnit.Count - 1 do
     if programMessageUnit[i] = valueWildcard then
-      WriteLn(StdErr, PadLeft('', indent) + '§')
+      WriteLn(ErrOutput, PadLeft('', indent) + '§')
     else
-      WriteLn(StdErr, PadLeft('', indent) + programMessageUnit[i]);
-  Flush(StdErr)
+      WriteLn(ErrOutput, PadLeft('', indent) + programMessageUnit[i]);
+  Flush(ErrOutput)
 {$else        }
 begin
 {$endif DEBUG }
@@ -225,7 +259,7 @@ var
   i: integer;
 
 begin
-  WriteLn(StdErr, ';;; ' + header);
+  WriteLn(ErrOutput, ';;; ' + header);
   for i := 0 to programMessage.Count - 1 do
     ScpiDump(TStringList(programMessage[i]), indent + 2)
 {$else        }
@@ -427,7 +461,9 @@ var
 
 begin
   result := programMessageUnit;
-  for i := 1 to programMessageUnit.Count - 1 do
+  for i := 1 to programMessageUnit.Count - 1 do begin
+    if programMessageUnit[i] = '' then  (* Shouldn't happen                     *)
+      continue;
     case programMessageUnit[i] of
       '?':           programMessageUnit[0] := programMessageUnit[0] + programMessageUnit[i];
       '*':           programMessageUnit[0] := programMessageUnit[0] + ':' + programMessageUnit[i];
@@ -436,11 +472,15 @@ begin
       if i <> programMessageUnit.Count - 1 then
         programMessageUnit[0] := programMessageUnit[0] + ':' + programMessageUnit[i]
       else
-        if (programMessageUnit[i] <> '') and (programMessageUnit[i][1] in ['.', '0'..'9', '*']) then
-          programMessageUnit[0] := programMessageUnit[0] + ' ' + programMessageUnit[i]
-        else
-          programMessageUnit[0] := programMessageUnit[0] + programMessageUnit[i]
-    end;
+        case programMessageUnit[i][1] of
+          '.', '*',
+          '0'..'9': programMessageUnit[0] := programMessageUnit[0] + ' ' + programMessageUnit[i];
+          ' ', '?': programMessageUnit[0] := programMessageUnit[0] + programMessageUnit[i]
+        otherwise
+          programMessageUnit[0] := programMessageUnit[0] + ':' + programMessageUnit[i]
+        end
+    end
+  end;
   for i := programMessageUnit.Count - 1 downto 1 do
     programMessageUnit.Delete(i)
 end { ReTail } ;
@@ -510,22 +550,15 @@ end { ReConstruct } ;
 
 procedure testSplit(const command: AnsiString; delimiter: AnsiChar= ':');
 
-{ var
-  pm: TStringList= nil;
-
-begin
-  pm := split(command, delimiter);
-  dump(pm, 0, command);
-  pm.Free;
-  WriteLn(StdErr) }
-
 var
   pm: TList;
+  reconstructed: string;
+  i: integer;
 
 begin
-  WriteLn(StdErr, '    ', command);
+  WriteLn(ErrOutput, '    ', command);
   pm := DeConstruct(command);
-  DeTail(pm);
+  DeTail(pm); // Splits trailing ? (among other things)
 
 (* At this point the original program message is completely broken down, and we *)
 (* can fairly easily scan through it either building a list of the short and    *)
@@ -541,14 +574,42 @@ begin
 
   ReTail(pm);
 //  ScpiDump(pm, 0, command);
-  WriteLn(StdErr, '=== ', ReConstruct(pm));
+  reconstructed := ReConstruct(pm);
+  WriteLn(ErrOutput, '=== ', reconstructed);
+
+(* This errs on the side of caution in that it doesn't ignore a difference      *)
+(* caused by a non-first PMU being re-rooted.                                   *)
+(*                                                                              *)
+(* This is not an error:                                                        *)
+(*                                                                              *)
+(*     FREQ:STAR 3 MHZ;STOP 5 MHZ                                               *)
+(* ...                                                                          *)
+(* === FREQ:STAR 3 MHZ;:FREQ:STOP 5 MHZ                                         *)
+(* === ----------------^                                                        *)
+(*                                                                              *)
+(* This is an error:                                                            *)
+(*                                                                              *)
+(*     SYSTem:HELP:SYNTax? SYSTem:HELP:SYNTax?                                  *)
+(* ...                                                                          *)
+(* === SYSTem:HELP:SYNTax:? SYSTem:HELP:SYNTax?                                 *)
+(* === ------------------^                                                      *)
+
+  if reconstructed <> command then begin
+    Write(ErrOutput, '=== ');
+    i := 1;
+    while (i <= Length(command)) and (i <= Length(reconstructed)) and (reconstructed[i] = command[i]) do begin
+        Write(ErrOutput, '-');
+        i += 1
+      end;
+    WriteLn(ErrOutput, '^')
+  end;
 
 (* The reconstructed Program Message should be very similar to the original,    *)
 (* except that every Program Message Unit is explicitly root-relative. As a     *)
 (* side-effect, the parsed representation is freed by default (or in all cases  *)
 (* of error).                                                                   *)
 
-  WriteLn(StdErr)
+  WriteLn(ErrOutput)
 end { testSplit } ;
 
 
@@ -579,13 +640,17 @@ begin
 (* Test a couple of queries derived from the above.                             *)
 
   testSplit('FREQ:START 3 MHZ;BAND 1 MHZ', ';');
+  testSplit('FREQ:START?', ';');
+  testSplit('FREQ:BAND?', ';');
   testSplit('FREQ:START 3 MHZ;BAND?', ';');
   testSplit('FREQ:START 3 MHz;:BAND A', ';');
+  testSplit('FREQ:START?', ';');
+  testSplit('BAND?', ';');
   testSplit('FREQ:START 3 MHz;:BAND?', ';');
 
 (* This is strictly invalid, since there is no header (node etc.) preceding the *)
 (* value. It might be possible to bodge it by assuming that a leading digit     *)
-(* indicates the start of a value (i.e. as an alternative to a space, but it    *)
+(* indicates the start of a value (i.e. as an alternative to a space), but it   *)
 (* will remain problematic.                                                     *)
 
   testSplit('FREQ:SLEW:AUTO ON;3 MHZ/S', ';');
@@ -608,7 +673,21 @@ begin
   testSplit('SYSTem:TIME? MAX,MAX,MAX');
   testSplit('SYSTem:HELP:SYNTax? SYSTem');
   testSplit('SYSTem:HELP:SYNTax? SYSTem:HELP');
+  testSplit('SYSTem:HELP:SYNTax? SYSTem:HELP:SYNTax');
   testSplit('SYSTem:HELP:SYNTax? SYSTem:HELP:SYNTax?');
+
+(* There are other cases- not necessarily in the specification, but encountered *)
+(* in real life, which don't have a value. Several of the ones below were       *)
+(* problematic at r22, as marked.                                               *)
+
+  testSplit('SENSe:INITiate?', ';');
+  testSplit('SENSe:INITiate', ';');
+  testSplit('SENSe:FETCh1?', ';');
+  testSplit('SENSe:FETCh?', ';');
+  testSplit('INITiate?', ';');
+  testSplit('INITiate', ';');
+  testSplit('FETCh1?', ';');
+  testSplit('FETCh?', ';');
 
   halt
 {$endif DEBUGONLY }

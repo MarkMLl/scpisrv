@@ -123,6 +123,13 @@ type
     *)
     procedure Register(const pattern: AnsiString; proc: ScpiProc);
 
+    (* For the purpose of debugging, dump the registered commands and handlers to a
+      stringlist (which must be freed by the caller). Note that provided that all
+      commands have been registered, this reflects the order in which a command
+      received over telnet etc. will be matched.
+    *)
+    function Dump(const prefix: string= ''): TStringList;
+
     (* Start up the background thread etc., generally after all registration has
       been done. Do not use this if input is from stdin and a prompt is required.
     *)
@@ -173,7 +180,8 @@ type
 implementation
 
 uses
-  StrUtils, UnixType, BaseUnix { , Errors } , ScpiParser, IpAddressUtils;
+  StrUtils, UnixType, BaseUnix { , Errors } , ScpiParser, IpAddressUtils
+                                                { , LineInfo } , lnfodwrf;
 
 type
   EScpiForcedTermination= CLASS(Exception);
@@ -294,24 +302,29 @@ end { TScpiServer.Destroy } ;
 
 
 (* Make sure that every node in the <Program Message Unit> appears in either the
-short or long symbol list. If it is a short symbol expand it to a long one,
-raise EInvalidSCPI with an appropriate message on error.
+  short or long symbol list. If it is a short symbol expand it to a long one,
+  raise EInvalidSCPI with an appropriate message on error.
 *)
 function TScpiServer.deAbbreviate(programMessageUnit: TStringList;
                                         exceptionOnError: boolean= false): TStringList;
 
 var
-  i, j: integer;
+  i, j, k: integer;
   node, suffix, hash, longName, shortName: AnsiString;
 
 begin
   result := programMessageUnit;
 
-(* Assume that the final node will either be a value (without leading space),   *)
-(* ?MAX etc. (with no embedded space), ? by itself, or * as a wildcard. In all  *)
-(* cases leave it untouched.                                                    *)
+(* Assume that if there is only a single node then it is a command which needs  *)
+(* to be processed. Otherwise the final node will either be a value (without    *)
+(* leading space), ?MAX etc. (with no embedded space), ? by itself, or * as a   *)
+(* wildcard: in all these cases leave it untouched.                             *)
 
-  for i := 0 to programMessageUnit.Count - 2 do begin
+  if programMessageUnit.Count = 1 then
+    k := 0
+  else
+    k := programMessageUnit.Count - 2;
+  for i := 0 to k do begin
 
 (* The penultimate node might have a numeric suffix, or # as a placeholder.     *)
 (* Preserve this, any decision as to how to interpret # will be made later.     *)
@@ -376,8 +389,8 @@ end { TScpiServer.deAbbreviate } ;
 
 
 (* Make sure that every node in the <Program Message> appears in either the
-short or long symbol list. If it is a short symbol expand it to a long one,
-raise EInvalidSCPI with an appropriate message on error.
+  short or long symbol list. If it is a short symbol expand it to a long one,
+  raise EInvalidSCPI with an appropriate message on error.
 *)
 function TScpiServer.deAbbreviate(programMessage: TList; exceptionOnError: boolean= false): TList;
 
@@ -392,10 +405,10 @@ end { TScpiServer.deAbbreviate } ;
 
 
 (* Look at every portion of the command passed as the parameter. If it does not
-exist in the short and long symbol lists then insert it, if it does exist
-then change it from the abbreviated (short) to the long form.
+  exist in the short and long symbol lists then insert it, if it does exist
+  then change it from the abbreviated (short) to the long form.
 
-On error raise an EInvalidAbbreviation.
+  On error raise an EInvalidAbbreviation.
 *)
 function TScpiServer.DeAbbreviate(const programMessage: AnsiString;
                                         exceptionOnError: boolean= false): AnsiString;
@@ -491,7 +504,7 @@ listenAgain:
       end;
       if fpSetSockOpt(fSocket, SOL_SOCKET, SO_RCVTIMEO, @timeout, SizeOf(timeout)) < 0 then begin
 {$if declared(StrError) }
-        WriteLn(stderr, 'SetSockopt error ' + IntToStr(SocketError) + ': ' + StrError(SocketError))
+        WriteLn(ErrOutput, 'SetSockopt error ' + IntToStr(SocketError) + ', "' + StrError(SocketError) + '"')
 {$endif declared        }
       end;
       sockLen := SizeOf(sockAddr);      (* Note: might or might not block       *)
@@ -763,6 +776,91 @@ begin
 end { TScpiServer.Register } ;
 
 
+(* For the purpose of debugging, dump the registered commands and handlers to a
+  stringlist (which must be freed by the caller). Note that provided that all
+  commands have been registered, this reflects the order in which a command
+  received over telnet etc. will be matched.
+*)
+function TScpiServer.Dump(const prefix: string= ''): TStringList;
+
+var
+  i: integer;
+  scratch: string;
+
+
+  procedure dumpOne(sl: TStringList; const names: string; proc: pointer);
+
+  type
+    Tkind= (none, stabs, dwarf);
+
+  var
+    source, func: shortstring;
+    lineNum: longint= -1;
+    kind: Tkind= none;
+
+  begin
+    source := '';
+    func := '';
+    if proc <> nil then begin
+
+(* The address of a command handler appears (as of FPC 3.2.2 on x86_64) to      *)
+(* correspond to the line number of the end statement of the preceding function *)
+(* rather than the expected entry point. Add a fudge factor to the address, I   *)
+(* think this could be usefully be made adaptive to whether GetLineInfo() with  *)
+(* no fudge returns a function name or just blank and should also retrieve the  *)
+(* procedure entry point alignment being used by the code generator.            *)
+
+  {$if declared(CloseStabs) }
+      if kind = none then
+        if LineInfo.GetLineInfo(PtrUInt(proc) + SizeOf(PtrUInt), func, source, lineNum) then
+          kind := stabs;
+  {$endif                 }
+  {$if declared(CloseDwarf) }
+      if kind = none then
+        if lnfodwrf.GetLineInfo(PtrUInt(proc) + SizeOf(PtrUInt), func, source, lineNum) then
+          kind := dwarf;
+  {$endif                 }
+      if source <> '' then begin
+        source := ExtractFileName(source);
+        source := ChangeFileExt(source, '.')
+      end;
+      if func <> '' then
+        func += '()'
+      else
+        if lineNum > 0 then
+          func := IntToStr(lineNum)
+    end;
+    result.Append(prefix + names + ' ' + source + func)
+  end { dumpOne } ;
+
+
+begin
+  result := nil;
+  Assert(registered.Count = registeredMixed.Count, 'Inconsistent registered list entry count');
+  result := TStringList.Create;
+  for i := 0 to registered.Count - 1 do
+    dumpOne(result, registered[i] + ' (' + registeredMixed[i] + ')', pointer(registered.Objects[i]));
+  dumpOne(result, '[Default]', defaultProc);
+  dumpOne(result, '[Syntax] ' + syntaxPattern + ' (' + syntaxPatternMixed + ')', nil);
+  dumpOne(result, '[Help] ' + helpPattern + ' (' + helpPatternMixed + ')', nil);
+  scratch := '';
+  if BlankIsHelp then
+    scratch := 'Blank is help';
+  if HelpIsHelp then begin
+    if scratch <> '' then
+      scratch += ', ';
+    scratch += 'HELP is help'
+  end;
+  if HelpQIsHelp then begin
+    if scratch <> '' then
+      scratch += ', ';
+    scratch += 'HELP? is help'
+  end;
+  if scratch <> '' then
+    result.Append(prefix + '[' + scratch + ']')
+end { TScpiServer.Dump } ;
+
+
 function TScpiServer.prepareSocket(): boolean;
 
 var
@@ -788,7 +886,7 @@ begin
     if fpSetSockOpt(fSocket, SOL_SOCKET, SO_REUSEADDR, @sz, SizeOf(sz)) < 0 then begin
       sz := SocketError;
 {$if declared(StrError) }
-      WriteLn(stderr, 'SetSockopt error ' + IntToStr(SocketError) + ': ' + StrError(SocketError))
+      WriteLn(ErrOutput, 'SetSockopt error ' + IntToStr(SocketError) + ', "' + StrError(SocketError) + '"')
 {$endif declared        }
     end;
     FillChar(sockAddr{%H-}, SizeOf(sockAddr), 0);
@@ -807,11 +905,11 @@ end { TScpiServer.prepareSocket } ;
 function TScpiServer.Run(prompt: boolean= false): boolean;
 
 begin
-(*  WriteLn(StdErr, '======= Symbols ======');
-  WriteLn(StdErr, shortSymbols.Text);
-  WriteLn(StdErr, '===== Registered =====');
-  WriteLn(StdErr, registered.Text);
-  WriteLn(StdErr, '======================'); *)
+(*  WriteLn(ErrOutput, '======= Symbols ======');
+  WriteLn(ErrOutput, shortSymbols.Text);
+  WriteLn(ErrOutput, '===== Registered =====');
+  WriteLn(ErrOutput, registered.Text);
+  WriteLn(ErrOutput, '======================'); *)
   result := true;
   fPrompt := prompt;
   if fprompt and (portNumber < 0) then
